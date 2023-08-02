@@ -8,10 +8,9 @@ using namespace std;
 
 class locker
 {
-    public:
+public:
     locker()
     {
-        // 判断互斥锁是否生成，反0成功
         if(pthread_mutex_init(&m_mutex, NULL) != 0)
         {
             throw exception();
@@ -21,7 +20,6 @@ class locker
     {
         pthread_mutex_destroy(&m_mutex);
     }
-    // 上锁
     bool lock()
     {
         return pthread_mutex_lock(&m_mutex) == 0;
@@ -30,19 +28,19 @@ class locker
     {
         return pthread_mutex_unlock(&m_mutex) == 0;
     }
-    // 返回设置好的锁变量
+    // 获取互斥量
     pthread_mutex_t *get()
     {
         return &m_mutex;
     }
 
-    private:
+private:
     pthread_mutex_t m_mutex;
 };
 
 class sem
 {
-    public:
+public:
     sem()
     {
         if(sem_init(&m_sem, 0, 0) != 0)
@@ -70,13 +68,13 @@ class sem
         return sem_post(&m_sem) == 0;
     }
 
-    private:
+private:
     sem_t m_sem;
 };
 
 class cond
 {
-    public:
+public:
     cond()
     {
         if(pthread_cond_init(&m_cond, NULL) !=0)
@@ -108,7 +106,8 @@ class cond
     {
         return pthread_cond_broadcast(&m_cond) == 0;
     }
-    private:
+
+private:
     pthread_cond_t m_cond;
 };
 
