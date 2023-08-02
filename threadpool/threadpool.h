@@ -6,24 +6,24 @@
 #include <exception>
 #include <pthread.h>
 #include "../lock/locker.h"
-// 
+#include "../CGImysql/sql_connection_pool.h"
 using namespace std;
 
 template <typename T>
 class threadpool
 {
-    // 模板类成员函数，类内声明，类外定义
-    public:
-    threadpool(int actor_model, /*,*/ int thread_number = 8, int max_requests = 1000);
+// 模板类成员函数，类内声明，类外定义
+public:
+    threadpool(int actor_model, connection_pool *connPool, int thread_number = 8, int max_requests = 1000);
     ~threadpool();
     bool append(T *request, int state);
     bool append_p(T *request);
 
-    private:
+private:
     static void *worker(void *arg);
     void run();
 
-    private:
+private:
     int m_thread_number;
     int m_max_requests;
     pthread_t *m_threads;
@@ -31,12 +31,12 @@ class threadpool
     list<T *> m_workqueue;
     locker m_queuelocker;
     sem m_queuestat;
-    // 
+    connection_pool *m_connPool;
     int m_actor_model;
 };
 
 template <typename T>
-threadpool<T>::threadpool(int actor_model, /*,*/ int thread_number, int max_requests) : m_actor_model(actor_model), m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL) /*,*/  // 列表初始化 m_actor_model(actor_model): 这表示对 m_actor_model 成员变量进行初始化，并将传递进来的 actor_model 参数的值赋给 m_actor_model。
+threadpool<T>::threadpool(int actor_model, connection_pool *connPool, int thread_number, int max_requests) : m_actor_model(actor_model), m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL), m_connPool(connPool)  // 列表初始化 m_actor_model(actor_model): 这表示对 m_actor_model 成员变量进行初始化，并将传递进来的 actor_model 参数的值赋给 m_actor_model。
 {
     if(thread_number <= 0 || max_requests <= 0)
     {
@@ -50,7 +50,7 @@ threadpool<T>::threadpool(int actor_model, /*,*/ int thread_number, int max_requ
     for(int i = 0; i < thread_number; ++i)
     {
         // 在多线程编程中，通常将线程的入口点函数定义为静态函数，以满足pthread_create函数的要求，并通过传递类实例的this指针作为参数，实现类成员的访问。
-        if(pthread_create(m_threads + 1, NULL, worker, this) != 0) // 返回值非0为出错
+        if(pthread_create(m_threads + i, NULL, worker, this) != 0) // 返回值非0为出错
         {
             delete [] m_threads;
             throw exception();
@@ -80,14 +80,27 @@ bool threadpool<T>::append(T *request, int state)
     request->m_state = state; // 此IO事件类别默认为读0
     m_workqueue.push_back(request);
     m_queuelocker.unlock();
-    m_queuelocker.post();  // 通知已有一个工作队列的空位
+    m_queuestat.post();  // 通知已有一个工作队列的空位
     return true;
+}
+template<typename T>
+bool threadpool<T>::append_p(T *request)
+{
+    m_queuelocker.lock();
+    if(m_workqueue.size() >= m_max_requests) 
+    {
+        m_queuelocker.unlock(); 
+        return false;
+    }
+    m_workqueue.push_back(request);
+    m_queuelocker.unlock();
+    m_queuestat.post();  
 }
 template<typename T>
 void *threadpool<T>::worker(void *arg)
 {
     threadpool *pool = (threadpool *)arg; // 通过 arg 参数可以获得当前 threadpool 对象的指针，并调用相应的成员函数来处理工作队列中的任务。这样新线程就可以访问当前 threadpool 对象
-    pool.run();
+    pool->run();
     return pool;
 }
 template<typename T>
@@ -117,12 +130,12 @@ void threadpool<T>::run()
                 if(request->read_once()) // 循环读取客户数据，直到无数据可读或对方关闭连接
                 {
                     request->improv = 1; // 是否正在处理数据中
-                    // 
+                    connectionRAII mysqlcon(&request->mysql, m_connPool);
                     request->process(); // 处理http报文请求与报文响应
                 }
                 else
                 {
-                    request->improc = 1;
+                    request->improv = 1;
                     request->timer_flag = 1; // 是否关闭连接
                 }
             }
@@ -139,7 +152,11 @@ void threadpool<T>::run()
                 }
             }
         }
-        // 
+        else
+        {
+            connectionRAII mysql(&request->mysql, m_connPool);
+            request->process();
+        }
     }
     
 }
