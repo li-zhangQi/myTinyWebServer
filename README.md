@@ -38,7 +38,7 @@ T :	pthread_cond_t
 
 H :	pthread_cond_init()	pthread_cond_destroy()	pthread_cond_wait()	pthread_cond_timewait()	
 
-​		pthread_cond_signal()	pthread_cond_broadcast()
+   pthread_cond_signal()	pthread_cond_broadcast()
 
 >
 >
