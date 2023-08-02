@@ -20,13 +20,16 @@
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <map>
-using namespace std;
 
 #include "../lock/locker.h"
+#include "../CGImysql/sql_connection_pool.h"
+#include "../timer/lst_timer.h"
+#include "../log/log.h"
+using namespace std;
 
 class http_conn
 {
-    public:
+public:
     static const int FILENAME_LEN = 200;
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 1024;
@@ -43,6 +46,7 @@ class http_conn
         CONNECT,
         PATH
     };
+    //主状态机状态
     enum CHECK_STATE
     {
         CHECK_STATE_REQUESTLINE = 0,
@@ -55,13 +59,13 @@ class http_conn
         NO_REQUEST,
         GET_REQUEST,
         BAD_REQUEST,
-        NO_RESOUCE,
+        NO_RESOURCE,
         FORBIDDEN_REQUEST,
-        FIFE_REQUEST,
+        FILE_REQUEST,
         INTERNAL_ERROR,
         CLOSED_CONNECTION
     };
-    //从状态机的状态，文本解析是否成功
+    //从状态机的状态，判断文本解析是否成功
     enum LINE_STATUS
     {
         LINE_OK = 0,
@@ -69,11 +73,11 @@ class http_conn
         LINE_OPEN
     };
 
-    public:
-    http_conn(){};
-    ~http_conn(){};
+public:
+    http_conn() {};
+    ~http_conn() {};
 
-    public:
+public:
     void init(int sockfd, const sockaddr_in &addr, char *,int, int, string user,string passwd, string sqlname);
     void close_conn(bool real_close = true);
     void process();
@@ -83,11 +87,14 @@ class http_conn
     {
         return &m_address;
     }
-    //
+    void initmysql_result(connection_pool *connPool);
+
+    //http是否关闭连接
     int timer_flag;
+    //是否正在处理数据中
     int improv;
 
-    private:
+private:
     void init();
     HTTP_CODE process_read();
     bool process_write(HTTP_CODE ret);
@@ -100,8 +107,7 @@ class http_conn
         return m_read_buf + m_start_line;
     };
     LINE_STATUS parse_line();
-    void unmap(); // ?
-
+    void unmap(); 
     bool add_response(const char* format, ...);
     bool add_content(const char* content);
     bool add_status_line(int status, const char *title);
@@ -111,13 +117,13 @@ class http_conn
     bool add_linger();
     bool add_blank_line();
 
-    public:
+public:
     static int m_epollfd;
     static int m_user_count;
-    // 
+    MYSQL *mysql;
     int m_state;
 
-    private:
+private:
     int m_sockfd;
     sockaddr_in m_address;
 	//存储读取的请求报文数据
@@ -150,16 +156,20 @@ class http_conn
 
 	//读取服务器上的文件地址
     char *m_file_address;
+    //此结构体用于存储文件属性信息
     struct stat m_file_stat;
 	//io向量机制iovec
     struct iovec m_iv[2];
     int m_iv_count;
-    int cgi;        //是否启用的POST
-    char *m_string; //存储请求头数据
+    //是否启用的POST
+    int cgi;    
+    //存储请求头指定的请求体的数据    
+    char *m_string; 
 	//剩余发送字节数
     int bytes_to_send;
 	//已发送字节数
     int bytes_have_send;
+    //网站根目录,即服务器该项目得本地目录
     char *doc_root;
 
     map<string, string> m_users;//用户名密码匹配表

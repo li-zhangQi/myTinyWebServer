@@ -1,7 +1,7 @@
 #include "http_conn.h"
 
-// #include <mysql/mysql.h>
-// #include <fstream>
+#include <mysql/mysql.h>
+#include <fstream>
 
 const char *ok_200_title = "OK";
 const char *error_400_title = "Bad Request";
@@ -16,7 +16,29 @@ const char *error_500_form = "There was an unusual problem serving the request f
 locker m_lock;
 map<string, string> users;
 
-// 
+void http_conn::initmysql_result(connection_pool *connPool)
+{
+    MYSQL *mysql = NULL;
+    connectionRAII mysqlcon(&mysql, connPool);
+
+    if(mysql_query(mysql, "SELECT username,passwd FROM user"))
+    {
+        LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
+    }
+
+    MYSQL_RES *result = mysql_store_result(mysql);
+
+    int num_fields = mysql_num_fields(result);
+
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+
+    while(MYSQL_ROW row = mysql_fetch_row(result))
+    {
+        string temp1(row[0]); // 第一列name
+        string temp2(row[1]); // 第二列password
+        users[temp1] = temp2;
+    }
+}
 
 int setnonblocking(int fd)
 {
@@ -40,10 +62,10 @@ void addfd(int epollfd, int fd, bool one_shot, int TRIGMode)
     }
     if(one_shot)
     {
-        event.events |= EPOLLONESHOT;  // 多个
-        epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
-        setnonblocking(fd);
+        event.events |= EPOLLONESHOT;  // 多个   
     }
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+    setnonblocking(fd);
 }
 
 void removefd(int epollfd, int fd)
@@ -64,8 +86,11 @@ void modfd(int epollfd, int fd, int ev, int TRIGMode)
     {
         event.events = ev | EPOLLIN | EPOLLRDHUP;
     }
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+    epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
 }
+
+int http_conn::m_user_count = 0;
+int http_conn::m_epollfd = -1;
 
 void http_conn::close_conn(bool real_close)
 {
@@ -78,7 +103,8 @@ void http_conn::close_conn(bool real_close)
     }
 }
 
-void http_conn::init(int sockfd, const struct sockaddr_in &addr, char *root, int TRIGMode, int close_log, string user, string passwd, string sqlname)
+void http_conn::init(int sockfd, const sockaddr_in &addr, char *root, int TRIGMode, 
+                     int close_log, string user, string passwd, string sqlname)
 {
     m_sockfd = sockfd;
     m_address = addr;
@@ -90,13 +116,15 @@ void http_conn::init(int sockfd, const struct sockaddr_in &addr, char *root, int
     m_TRIGMode = TRIGMode;
     m_close_log = close_log;
 
-    //     
+    strcpy(sql_user, user.c_str());
+    strcpy(sql_passwd, passwd.c_str());
+    strcpy(sql_name, sqlname.c_str());
     init();
 }
 
 void http_conn::init()
 {
-    // 
+    mysql = NULL;
     bytes_to_send = 0;
     bytes_have_send = 0;
     m_check_state = CHECK_STATE_REQUESTLINE;
@@ -280,7 +308,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
             m_linger = true;
         }
     }
-    else if(strncasecmp(text, "Contect-length:", 15) == 0)
+    else if(strncasecmp(text, "Content-length:", 15) == 0)
     {
         text += 15;
         text += strspn(text, " \t");
@@ -294,7 +322,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     }
     else
     {
-        printf("oop!unknow header: %s\n", text);
+        LOG_INFO("oop!unknow header: %s\n", text);
     }
     return NO_REQUEST;
 }
@@ -316,11 +344,11 @@ http_conn::HTTP_CODE http_conn::process_read()
     HTTP_CODE ret = NO_REQUEST;
     char *text = 0;
 
-    while((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) || (line_status = parse_line()) == LINE_OPEN)  // POST通过主状态机的状态和一个外加条件控制循环（因为CHECK_STATE_CONTENT以保持一直不变了） || GET通过从状态机的状态
+    while((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) || (line_status = parse_line()) == LINE_OK)  // POST通过主状态机的状态和一个外加条件控制循环（因为CHECK_STATE_CONTENT以保持一直不变了） || GET通过从状态机的状态
     {
         text = get_line();
         m_start_line = m_checked_idx;
-        //
+        LOG_INFO("%s", text);
         switch(m_check_state)
         {
             case CHECK_STATE_REQUESTLINE:
@@ -335,7 +363,7 @@ http_conn::HTTP_CODE http_conn::process_read()
             case CHECK_STATE_HEADER:
             {
                 ret = parse_headers(text);
-                if(ret = BAD_REQUEST)
+                if(ret == BAD_REQUEST)
                 {
                     return BAD_REQUEST;
                 }
@@ -356,37 +384,150 @@ http_conn::HTTP_CODE http_conn::process_read()
                 break;
             }
             default:
-            return INTERNAL_ERROR;
+                return INTERNAL_ERROR;
         }
-
     }
     return NO_REQUEST;
 }
 
-// http_conn::HTTP_CODE http_conn::do_request()
-// {
-//     strcpy(m_real_file, doc_root);
-//     int len = strlen(doc_root);
-//     const char *p = strrchr(m_url, '/');
+http_conn::HTTP_CODE http_conn::do_request()
+{
+    strcpy(m_real_file, doc_root);
+    int len =strlen(doc_root);
+    const char *p = strrchr(m_url, '/');
 
-//     if(cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
-//     {
-//         char flag = m_url[1];  
+    if(cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
+    {
+        char flag = m_url[1];
 
-//         char *m_url_real = (char *)malloc(sizeof(char) * 200);
-//         strcpy(m_url_real, "/");
-//         strcat(m_url_real, m_url + 2);
-//         strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len -1);
-//         free(m_url_real);
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/");
+        strcat(m_url_real, m_url + 2);  
+        strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1); // 减去前面len的偏移占位，再减1预留给null终止符。因为此处会跳转下一个地址，需要置终止符
+        free(m_url_real);
 
-//         char name[100], passwd[100];
-//         int i;
-//         for(i = 5; m_string[i] != '&'; ++i) 
-//         {
+        //账号信息:user=root&password=123456
+        char name[100], password[100];
+        int i;
+        for(i = 5; m_string[i] != '&'; ++i) // 跳过user=字段。
+        {
+            name[i - 5] = m_string[i];
+        }
+        name[i - 5] = '\0';
 
-//         }
-//     }
-// }
+        int j = 0;
+        for(i = i + 10; m_string[i] != '\0'; ++i, ++j) // 跳过password=字段
+        {
+            password[j] = m_string[i];
+        }
+        password[j] = '\0';
+
+        if(*(p + 1) == '3')
+        {
+            char *sql_insert = (char *)malloc(sizeof(char) * 200);
+            strcpy(sql_insert, "INSERT INTO user(username, passwd) VALUES(");
+            strcpy(sql_insert, "'");
+            strcpy(sql_insert, name);
+            strcpy(sql_insert, "', '");
+            strcpy(sql_insert, password);
+            strcpy(sql_insert, "')");
+
+            // 判断是否重名，无则。。。有则。。。
+            if(users.find(name) == users.end())  // find返回字典容器的迭代器，遍历到尾部为未找到
+            {
+                m_lock.lock();
+                int res = mysql_query(mysql, sql_insert);
+                users.insert(pair<string, string>(name, password));
+                m_lock.unlock();
+
+                if(!res) // sql语句执行成功返回0，非零该条件为真
+                {
+                    strcpy(m_url, "/log.html");
+                }
+                else
+                {
+                    strcpy(m_url, "/registerError.html");
+                }
+            }
+            else
+            {
+                strcpy(m_url, "/registerError.html");
+            }
+        }
+        else if(*(p + 1) == '2')
+        {
+            if(users.find(name) != users.end() && users[name] == password)
+            {
+                strcpy(m_url, "/welcome.html");
+            }
+            else
+            {
+                strcpy(m_url, "/logError.html");
+            }
+        }
+    }
+
+    if(*(p + 1) == '0')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/register.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real)); // 可指定特定长度，也可指定最大长度。这里直接指定具体长度，因无需跳转
+        free(m_url_real);
+    }
+    else if(*(p + 1) == '1')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/log.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real)); 
+        free(m_url_real);
+    }
+    else if(*(p + 1) == '5')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/picture.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real)); 
+        free(m_url_real);
+    }
+    else if(*(p + 1) == '6')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/video.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real)); 
+        free(m_url_real);
+    }
+    else if(*(p + 1) == '7')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/fans.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real)); 
+        free(m_url_real);
+    }
+    else
+    {
+        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1); // 错误仍拼接该url，作后续判误类型
+    }
+
+    if(stat(m_real_file, &m_file_stat) < 0)
+    {
+        return NO_RESOURCE;
+    }
+
+    if(!(m_file_stat.st_mode & S_IROTH)) // 判其他用户是否可读
+    {
+        return FORBIDDEN_REQUEST;
+    }
+
+    if(S_ISDIR(m_file_stat.st_mode))
+    {
+        return BAD_REQUEST;
+    }
+
+    int fd = open(m_real_file, O_RDONLY);
+    m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0); // 映射区域的保护方式PROT_READ设置为只读取操作。MAP_PRIVATE，表示创建一个写时拷贝的私有映射，对映射区域的修改不会影响到原文件。
+    close(fd);
+
+    return FILE_REQUEST;
+}
 
 void http_conn::unmap()
 {
@@ -397,41 +538,85 @@ void http_conn::unmap()
     }
 }
 
+// bool http_conn::write()
+// {
+//     int temp = 0;
+//     int newadd = 0;
+//     if(bytes_to_send == 0)
+//     {
+//         modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+//         init();
+//         return true;
+//     }
+
+//     while(1)
+//     {
+//         temp = writev(m_sockfd, m_iv, m_iv_count); // 在一次系统调用中向文件描述符写入多个不连续的数据块
+
+//         if(temp >= 0)
+//         {
+//             bytes_have_send += temp;
+//             newadd = bytes_have_send - m_write_idx;
+//         }
+//         else
+//         {
+//             if(errno == EAGAIN)
+//             {
+//                 if(bytes_have_send >= m_iv[0].iov_len)
+//                 {
+//                     m_iv[0].iov_len = 0;
+//                     m_iv[1].iov_base = m_file_address + newadd;
+//                     m_iv[1].iov_len = bytes_to_send;
+//                 }
+//                 else
+//                 {
+//                     m_iv[0].iov_base = m_write_buf + bytes_have_send;
+//                     m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
+//                 }
+//                 modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+//                 return true;
+//             }
+//             unmap();
+//             return false;
+//         }
+//         bytes_have_send -= temp;
+
+//         if(bytes_to_send <= 0)
+//         {
+//             unmap();
+//             modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+
+//             if(m_linger)
+//             {
+//                 init();
+//                 return true;
+//             }
+//             else
+//             {
+//                 return false;
+//             }
+//         }
+//     }
+// }
 bool http_conn::write()
 {
     int temp = 0;
-    int newadd = 0;
-    if(bytes_to_send == 0)
+
+    if (bytes_to_send == 0)
     {
         modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
         init();
         return true;
     }
 
-    while(1)
+    while (1)
     {
-        temp = writev(m_sockfd, m_iv, m_iv_count); // 在一次系统调用中向文件描述符写入多个不连续的数据块
+        temp = writev(m_sockfd, m_iv, m_iv_count);
 
-        if(temp > 0)
+        if (temp < 0)
         {
-            bytes_have_send += temp;
-            newadd = bytes_have_send - m_write_idx;
-        }
-        if(temp <= -1)
-        {
-            if(errno == EAGAIN)
+            if (errno == EAGAIN)
             {
-                if(bytes_have_send >= m_iv[0].iov_len)
-                {
-                    m_iv[0].iov_len = 0;
-                    m_iv[1].iov_base = m_file_address + newadd;
-                    m_iv[1].iov_len = bytes_to_send;
-                }
-                else
-                {
-                    m_iv[0].iov_base = m_write_buf + bytes_to_send;
-                    m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
-                }
                 modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
                 return true;
             }
@@ -439,14 +624,26 @@ bool http_conn::write()
             return false;
         }
 
-        bytes_have_send -= temp; // ??
+        bytes_have_send += temp;
+        bytes_to_send -= temp;
+        if (bytes_have_send >= m_iv[0].iov_len)
+        {
+            m_iv[0].iov_len = 0;
+            m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
+            m_iv[1].iov_len = bytes_to_send;
+        }
+        else
+        {
+            m_iv[0].iov_base = m_write_buf + bytes_have_send;
+            m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
+        }
 
-        if(bytes_to_send <= 0)
+        if (bytes_to_send <= 0)
         {
             unmap();
             modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
 
-            if(m_linger)
+            if (m_linger)
             {
                 init();
                 return true;
@@ -476,7 +673,7 @@ bool http_conn::add_response(const char *format, ...)
     m_write_idx += len;
     va_end(arg_list);
 
-    // LOG_INFO("request:%s", m_write_buf);
+    LOG_INFO("request:%s", m_write_buf);
 
     return true;
 }
@@ -550,7 +747,7 @@ bool http_conn::process_write(HTTP_CODE ret)
         }
         break;
     }
-    case FIFE_REQUEST:
+    case FILE_REQUEST:
     {
         add_status_line(200, ok_200_title);
         if(m_file_stat.st_size != 0)
@@ -582,6 +779,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     m_iv[0].iov_base = m_write_buf;
     m_iv[0].iov_len = m_write_idx;
     m_iv_count = 1;
+    bytes_to_send = m_write_idx; //?
     return true;
 }
 
