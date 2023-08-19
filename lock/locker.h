@@ -28,7 +28,7 @@ public:
     {
         return pthread_mutex_unlock(&m_mutex) == 0;
     }
-    // 获取互斥量
+    //让条件变量获取到互斥量
     pthread_mutex_t *get()
     {
         return &m_mutex;
