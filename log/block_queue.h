@@ -10,7 +10,7 @@ using namespace std;
 template <class T>
 class block_queue
 {
-    public:
+public:
     block_queue(int max_size = 1000)
     {
         if(max_size <= 0)
@@ -43,6 +43,7 @@ class block_queue
         }
         m_mutex.unlock();
     }
+
     //判断队列是否已满
     bool full()
     {
@@ -55,6 +56,7 @@ class block_queue
         m_mutex.unlock();
         return false;
     }
+
     //判断队列是否为空
     bool empty()
     {
@@ -68,6 +70,7 @@ class block_queue
         return false;
     }
 
+    //返回队首元素
     bool front(T &value)
     {
         m_mutex.lock();
@@ -78,12 +81,13 @@ class block_queue
         }
         value = m_array[m_front];
         m_mutex.unlock();
-        return false;
+        return true;
     }
 
+    //返回队尾元素
     bool back(T &value)
     {
-        m_mutex.unlock();
+        m_mutex.lock();
         if(m_size == 0)
         {
             m_mutex.unlock();
@@ -104,17 +108,28 @@ class block_queue
         return tmp;
     }
 
+    int max_size()
+    {
+        int tmp = 0;
+        m_mutex.lock();
+        tmp = m_max_size;
+
+        m_mutex.unlock();
+        return tmp;
+    }
+
     bool push(const T &item)
     {
         m_mutex.lock();
         if(m_size >= m_max_size)
         {
-            m_cond.broadcast(); //若当前没有线程等待条件变量,则唤醒无意义
+            m_cond.broadcast(); 
             m_mutex.unlock();
             return false;
         }
 
-        m_back = (m_back + 1) % m_max_size;  // m_back + 1为要出入数据的位置，取模能防止跃出队列位置
+        //m_back + 1为要让出入数据的位置，取模能防止跃出队列位置
+        m_back = (m_back + 1) % m_max_size;  
         m_array[m_back] = item;
 
         m_size++;
@@ -136,7 +151,8 @@ class block_queue
             }
         }
 
-        m_front = (m_front + 1) % m_max_size;  // 循环队列中，不论进队列还是出队列，尾指针或者头指针都先加1
+        //循环队列中，不论进队列还是出队列，尾指针或者头指针都先加1
+        m_front = (m_front + 1) % m_max_size;  
         item = m_array[m_front];
         m_size--;
         m_mutex.unlock();
@@ -147,12 +163,12 @@ class block_queue
     {
         struct timespec t = {0, 0};  // 秒，纳秒 1s = 1000us 
         struct timeval now = {0, 0}; // 秒，微秒 1us = 1000ns
-        gettimeofday(&now, NULL);
+        gettimeofday(&now, NULL); // 获取当前时间，并存入now中
         m_mutex.lock();
         if(m_size <= 0)
         {
-            t.tv_sec = now.tv_sec + ms_timeout / 1000;
-            t.tv_nsec = (ms_timeout % 1000) * 1000;
+            t.tv_sec = now.tv_sec + ms_timeout / 1000; // 获取秒
+            t.tv_nsec = (ms_timeout % 1000) * 1000; // 获取微秒
             if(!m_cond.timewait(m_mutex.get(), t))
             {
                 m_mutex.unlock();
@@ -173,7 +189,7 @@ class block_queue
         return true;
     }
 
-    private:
+private:
     locker m_mutex;
     cond m_cond;
 
@@ -183,9 +199,5 @@ class block_queue
     int m_front;
     int m_back;
 };
-
-
-
-
 
 #endif
