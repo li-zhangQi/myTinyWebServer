@@ -7,6 +7,9 @@
 #include <string.h>
 #include <iostream>
 #include <string>
+#include <stdlib.h>
+#include <pthread.h>
+
 #include "../lock/locker.h"
 #include "../log/log.h"
 using namespace std;
@@ -39,9 +42,10 @@ private:
     int m_CurConn;
     //当前空闲的连接数
     int m_FreeConn;
-    locker lock;
     //连接池
     list<MYSQL *> connList;
+
+    locker lock;
     sem reserve;
 
 public:
@@ -62,6 +66,7 @@ public:
 class connectionRAII
 {
 public:
+    //双指针对MYSQL *con修改，实现在获取连接时对传入的参数进行修改
     connectionRAII(MYSQL **con, connection_pool *connPool);
     ~connectionRAII();
 
