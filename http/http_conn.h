@@ -20,6 +20,8 @@
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <map>
+#include <mysql/mysql.h>
+#include <fstream>
 
 #include "../lock/locker.h"
 #include "../CGImysql/sql_connection_pool.h"
@@ -27,13 +29,17 @@
 #include "../log/log.h"
 using namespace std;
 
+//http连接类
 class http_conn
 {
 public:
+    //读取文件的名称m_real_file的大小
     static const int FILENAME_LEN = 200;
+    //读缓冲区m_read_buf的大小
     static const int READ_BUFFER_SIZE = 2048;
+    //写缓冲区m_write_buf的大小
     static const int WRITE_BUFFER_SIZE = 1024;
-    //报文的请求方法
+    //报文的请求方法，本此我们只使用到GET和POST
     enum METHOD
     {
         GET = 0,
@@ -56,21 +62,21 @@ public:
     //报文解析的结果
     enum HTTP_CODE
     {
-        NO_REQUEST,
-        GET_REQUEST,
-        BAD_REQUEST,
-        NO_RESOURCE,
-        FORBIDDEN_REQUEST,
-        FILE_REQUEST,
-        INTERNAL_ERROR,
+        NO_REQUEST,  //请求不完整，需要继续读取请求报文数据，跳转主线程继续监测读事件
+        GET_REQUEST,  //获得了完整的HTTP请求
+        BAD_REQUEST,  //HTTP请求报文有语法错误
+        NO_RESOURCE,  //请求资源不存在
+        FORBIDDEN_REQUEST,  //请求资源禁止访问，没有读取权限
+        FILE_REQUEST,  //请求资源可以正常访问
+        INTERNAL_ERROR,  //服务器内部错误
         CLOSED_CONNECTION
     };
     //从状态机的状态，判断文本解析是否成功
     enum LINE_STATUS
     {
-        LINE_OK = 0,
-        LINE_BAD,
-        LINE_OPEN
+        LINE_OK = 0,  //整行完整接收
+        LINE_BAD,  //语法错误
+        LINE_OPEN  //接收不完整，需要继续接收
     };
 
 public:
@@ -78,44 +84,60 @@ public:
     ~http_conn() {};
 
 public:
+    //初始化套接字
     void init(int sockfd, const sockaddr_in &addr, char *,int, int, string user,string passwd, string sqlname);
+    //关闭HTTP连接
     void close_conn(bool real_close = true);
+    //http处理函数
     void process();
+    //读取浏览器端发来的全部数据
     bool read_once();
+    //响应报文数据发送给浏览器端
     bool write();
     sockaddr_in *get_address()
     {
         return &m_address;
     }
+    //初始化数据库读取线程
     void initmysql_result(connection_pool *connPool);
 
-    //http是否关闭连接
+    //http是否关闭连接，其默认值为0，表示已关闭
     int timer_flag;
-    //是否正在处理数据中
+    //是否正在处理数据中，其默认值为0，表示未处理
     int improv;
 
 private:
     void init();
+    //从m_read_buf读取，并处理请求报文
     HTTP_CODE process_read();
+    //向m_write_buf写入响应报文数据
     bool process_write(HTTP_CODE ret);
+    //主状态机解析报文中的请求行数据
     HTTP_CODE parse_request_line(char *text);
+    //主状态机解析报文中的请求头数据
     HTTP_CODE parse_headers(char *text);
+    //主状态机解析报文中的请求体内容
     HTTP_CODE parse_content(char *text);
+    //生成响应报文
     HTTP_CODE do_request();
+    //get_line用于将指针向后偏移，指向未处理的字符
     char *get_line()
     {
         return m_read_buf + m_start_line;
     };
+    //从状态机读取一行，分析是请求报文的哪一部分
     LINE_STATUS parse_line();
+    //取消内存映射
     void unmap(); 
-    bool add_response(const char* format, ...);
-    bool add_content(const char* content);
-    bool add_status_line(int status, const char *title);
-    bool add_headers(int content_length);
-    bool add_content_type();
-    bool add_content_length(int content_length);
-    bool add_linger();
-    bool add_blank_line();
+    //根据响应报文格式，生成对应8个部分，以下函数均由do_request调用
+    bool add_response(const char* format, ...);  
+    bool add_content(const char* content);  //添加文本内容
+    bool add_status_line(int status, const char *title);  //添加状态行
+    bool add_headers(int content_length);  //添加消息报头
+    bool add_content_type();  //添加文本类型
+    bool add_content_length(int content_length);  //记录响应报文长度
+    bool add_linger();  //连接状态
+    bool add_blank_line();  //添加空行
 
 public:
     static int m_epollfd;
@@ -136,7 +158,7 @@ private:
     long m_start_line;
 	//存储发出的响应报文数据
     char m_write_buf[WRITE_BUFFER_SIZE];
-	//指示buffer中的长度
+	//指示m_write_buf中数据的最后一个字节的下一个位置
     int m_write_idx;
 	//主状态机的状态
     CHECK_STATE m_check_state;
@@ -144,15 +166,12 @@ private:
     METHOD m_method;
 
 	//以下为解析请求报文中对应的6个变量
-    //存储读取文件的名称
-    char m_real_file[FILENAME_LEN];
-    char *m_url;
+    char m_real_file[FILENAME_LEN];  //存储读取文件的名称
+    char *m_url;  
     char *m_version;
     char *m_host;
-    //用来存储请求头部表示的请求主体数据的内容长度字段，GET请求为长度为0,POST有长度
-    int m_content_length;
-    //判断POST请求是否为长连接
-    bool m_linger;
+    int m_content_length;  //用来存储请求头部表示的请求主体数据的内容长度字段，GET请求为长度为0，POST有长度
+    bool m_linger;  //判断POST请求是否为长连接
 
 	//读取服务器上的文件地址
     char *m_file_address;
@@ -169,12 +188,15 @@ private:
     int bytes_to_send;
 	//已发送字节数
     int bytes_have_send;
-    //网站根目录,即服务器该项目得本地目录
+    //网站根目录,即服务器该项目的本地目录
     char *doc_root;
 
-    map<string, string> m_users;//用户名密码匹配表
-    int m_TRIGMode;//触发模式
-    int m_close_log;//是否开启日志
+    //用户名密码匹配表
+    map<string, string> m_users;
+    //触发模式
+    int m_TRIGMode;
+    //是否开启日志
+    int m_close_log;
 
     char sql_user[100];
     char sql_passwd[100];
