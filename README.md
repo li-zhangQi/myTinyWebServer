@@ -1,3 +1,88 @@
+# myWebServer
+
+___
+
+用C++实现的高性能WEB服务器，经过webbenchh压力测试可以实现上万的每秒查询率QPS
+
+## 环境要求
+
+___
+
+- Linux
+- C++
+- MySql
+
+## 项目启动
+
+___
+
+ 先配置好数据库
+
+```c++
+// 建立webdb库
+create database webdb;
+
+// 创建user表
+USE webdb;
+CREATE TABLE user(
+    username char(50) NULL,
+    password char(50) NULL
+)ENGINE=InnoDB;
+
+// 添加数据
+INSERT INTO user(username, password) VALUES('name', 'password');
+```
+
+```c++
+make
+./bin/server
+```
+
+## 支持个性化运行
+
+___
+
+```c++
+./server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model]
+
+```
+
+-p，自定义端口号
+
+-l，选择日志写入方式，默认同步写入
+
+-m，listenfd和connfd的模式组合，默认使用LT + LT
+
+-o，优雅关闭连接，默认不使用
+
+-s，数据库连接数量
+
+-t，线程数量
+
+-c，关闭日志，默认打开
+
+-a，选择反应堆模型，默认Proactor
+
+## 压力测试
+
+---
+
+```c++ 
+./webbench-1.5/webbench -c 100 -t 10 http://ip:port/
+./webbench-1.5/webbench -c 1000 -t 10 http://ip:port/
+./webbench-1.5/webbench -c 5000 -t 10 http://ip:port/
+./webbench-1.5/webbench -c 10000 -t 10 http://ip:port/
+```
+
+- 测试环境: Ubuntu:18.04 cpu:i5-8265U 内存:8G
+- QPS: 电脑性能限制实测7200+ 理论有10000+
+
+
+
+___
+
+
+
 # 对项目的整体梳理
 
 ___
