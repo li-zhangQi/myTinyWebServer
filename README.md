@@ -6,15 +6,11 @@ ___
 
 ## 环境要求
 
-___
-
 - Linux
 - C++
 - MySql
 
 ## 项目启动
-
-___
 
  先配置好数据库
 
@@ -40,8 +36,6 @@ make
 
 ## 支持个性化运行
 
-___
-
 ```c++
 ./server [-p port] [-l LOGWrite] [-m TRIGMode] [-o OPT_LINGER] [-s sql_num] [-t thread_num] [-c close_log] [-a actor_model]
 
@@ -65,8 +59,6 @@ ___
 
 ## 压力测试
 
----
-
 ```c++ 
 ./webbench-1.5/webbench -c 100 -t 10 http://ip:port/
 ./webbench-1.5/webbench -c 1000 -t 10 http://ip:port/
@@ -79,7 +71,7 @@ ___
 
 
 
-___
+
 
 
 
